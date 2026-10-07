@@ -25,7 +25,7 @@
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecRegistry, CodecTag, Decoder,
-    Encoder, Error, Frame, Packet, ProbeContext, Result, RuntimeContext,
+    Encoder, Error, Frame, Packet, PixelFormat, ProbeContext, Result, RuntimeContext,
 };
 
 use crate::header::{parse_frame_header, Svq1FrameHeader};
@@ -191,6 +191,7 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
         pending: None,
         last_header: None,
         reference: None,
+        last_output: None,
         eof: false,
     }))
 }
@@ -213,6 +214,9 @@ pub struct Svq1DecoderHandle {
     pending: Option<Packet>,
     last_header: Option<Svq1FrameHeader>,
     reference: Option<crate::svq1_plane::Svq1DecodedFrame>,
+    /// Size of the frame `receive_frame` last returned (frames are
+    /// decoded there, so none is known before it).
+    last_output: Option<(u32, u32)>,
     eof: bool,
 }
 
@@ -270,12 +274,23 @@ impl Decoder for Svq1DecoderHandle {
         };
         let decoded = crate::svq1_plane::decode_frame(&packet.data, self.reference.as_ref())?;
         let video = decoded.to_video_frame_420(packet.pts);
+        // Explicit dimensions are 12-bit (spec/01).
+        self.last_output = Some((decoded.width() as u32, decoded.height() as u32));
         // I- and P-frames become the reference for subsequent frames;
         // B ("droppable") frames never do (wiki §"Algorithm Basics").
         if decoded.header.picture_type != crate::header::Svq1PictureType::Droppable {
             self.reference = Some(decoded);
         }
         Ok(Frame::Video(video))
+    }
+
+    fn output_video_dimensions(&self) -> Option<(u32, u32)> {
+        self.last_output
+    }
+
+    /// 4:1:0 chroma is bridged to 4:2:0 at the decoded size.
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.last_output.map(|_| PixelFormat::Yuv420P)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -287,6 +302,7 @@ impl Decoder for Svq1DecoderHandle {
         self.pending = None;
         self.last_header = None;
         self.reference = None;
+        self.last_output = None;
         self.eof = false;
         Ok(())
     }
@@ -841,6 +857,18 @@ impl Decoder for Svq3DecoderHandle {
         Ok(Frame::Video(video))
     }
 
+    /// Every picture has the `SEQH` size (extradata; spec/02 §4) and is
+    /// cropped to it.
+    fn output_video_dimensions(&self) -> Option<(u32, u32)> {
+        self.sequence_header()
+            .map(|s| (u32::from(s.width), u32::from(s.height)))
+            .filter(|&(w, h)| w > 0 && h > 0)
+    }
+
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.output_video_dimensions().map(|_| PixelFormat::Yuv420P)
+    }
+
     fn flush(&mut self) -> Result<()> {
         self.eof = true;
         Ok(())
@@ -1356,6 +1384,7 @@ mod tests {
             pending: None,
             last_header: None,
             reference: None,
+            last_output: None,
             eof: false,
         };
         let pkt = make_packet(minimal_iframe_packet());

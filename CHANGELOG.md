@@ -6,6 +6,12 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Decoder::output_video_dimensions` / `output_pixel_format`: SVQ1
+  reports the size of the frame `receive_frame` last returned; SVQ3 the
+  `SEQH` size every picture is cropped to. Both `Yuv420P`.
+
 ### Changed
 
 - Package metadata: the description now names the SVQ3 decoder;
